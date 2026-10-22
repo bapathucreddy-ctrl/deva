@@ -56,18 +56,14 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun testVoiceCommand(onText: (String) -> Unit, onFinished: () -> Unit) {
-        if (Build.VERSION.SDK_INT < 31 || !SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
-            onText("On-device recognition unavailable on this phone.")
-            onFinished()
-            return
-        }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestNeededPermissions()
             onText("Microphone permission is required.")
             onFinished()
             return
         }
-        val sr = SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
+
+        val sr = SpeechRecognizer.createSpeechRecognizer(this)
         sr.setRecognitionListener(object : RecognitionListener {
             override fun onResults(bundle: Bundle?) {
                 val text = bundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
@@ -82,7 +78,12 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 onFinished()
             }
             override fun onError(error: Int) {
-                onText("Speech recognition error $error")
+                val message = when (error) {
+                    SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "Selected speech language is not supported."
+                    SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "Speech language model is unavailable. Check Google/Samsung speech services or download the language model."
+                    else -> "Speech recognition error $error"
+                }
+                onText(message)
                 sr.destroy()
                 onFinished()
             }
@@ -97,8 +98,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         sr.startListening(
             Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                 .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
-                .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+                .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
         )
     }
 
@@ -226,7 +227,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     HorizontalDivider()
                     Text("V1 settings", style = MaterialTheme.typography.titleSmall)
                     Text("Spotify is preferred. YouTube Music is never selected automatically when Spotify cannot satisfy a request.", style = MaterialTheme.typography.bodySmall)
-                    Text("Wake and command recognition use Android's on-device recognizer only. DEVA does not intentionally fall back to a network recognizer.", style = MaterialTheme.typography.bodySmall)
+                    Text("DEVA prefers Android on-device recognition for wake listening, but falls back to the phone's normal speech service if the local language model is unavailable.", style = MaterialTheme.typography.bodySmall)
                     Text("After a reboot, Android requires DEVA to be opened/tapped before microphone foreground listening can restart.", style = MaterialTheme.typography.bodySmall)
                 }
             }
