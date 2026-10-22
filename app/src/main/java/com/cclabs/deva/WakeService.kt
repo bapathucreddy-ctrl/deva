@@ -24,6 +24,7 @@ class WakeService : Service(), RecognitionListener, TextToSpeech.OnInitListener 
     private var nextStateAfterSpeech = State.WAITING_FOR_WAKE
     private var recognizerReady = false
     private var awaitingYouTubeConfirmation = false
+    private var usingOnDeviceRecognizer = false
 
     override fun onCreate() {
         super.onCreate()
@@ -41,13 +42,8 @@ class WakeService : Service(), RecognitionListener, TextToSpeech.OnInitListener 
         val route = routeCommunicationAudio()
         setRuntimeState(true, "Listening for Hey Deva", route)
 
-        if (Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
-            recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(this).also { it.setRecognitionListener(this) }
-            recognizerReady = true
-            startListening(350)
-        } else {
-            update("On-device speech recognition unavailable")
-        }
+        createPreferredRecognizer()
+        startListening(350)
     }
 
     override fun onBind(intent: Intent?) = null
@@ -61,10 +57,32 @@ class WakeService : Service(), RecognitionListener, TextToSpeech.OnInitListener 
         return START_STICKY
     }
 
+    private fun createPreferredRecognizer() {
+        recognizer?.destroy()
+        usingOnDeviceRecognizer = Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
+        recognizer = if (usingOnDeviceRecognizer) {
+            SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
+        } else {
+            SpeechRecognizer.createSpeechRecognizer(this)
+        }
+        recognizer?.setRecognitionListener(this)
+        recognizerReady = true
+        update(if (usingOnDeviceRecognizer) "Listening locally for Hey Deva" else "Listening for Hey Deva")
+    }
+
+    private fun switchToSystemRecognizer() {
+        try { recognizer?.cancel() } catch (_: Exception) {}
+        recognizer?.destroy()
+        recognizer = SpeechRecognizer.createSpeechRecognizer(this).also { it.setRecognitionListener(this) }
+        usingOnDeviceRecognizer = false
+        recognizerReady = true
+        update("Local speech model unavailable — using Android speech service")
+    }
+
     private fun recognizerIntent() = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
         .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
-        .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+        .putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+        .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, usingOnDeviceRecognizer)
         .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
 
@@ -148,11 +166,19 @@ class WakeService : Service(), RecognitionListener, TextToSpeech.OnInitListener 
 
     override fun onError(error: Int) {
         if (state == State.SPEAKING || state == State.STOPPED) return
+        if (usingOnDeviceRecognizer &&
+            (error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED ||
+             error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE)) {
+            switchToSystemRecognizer()
+            startListening(300)
+            return
+        }
         val delay = when (error) {
             SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 1200L
             SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> 250L
             else -> 700L
         }
+        update("Speech recognizer error $error — retrying")
         retry(delay)
     }
 
