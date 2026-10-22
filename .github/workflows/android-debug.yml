@@ -1,0 +1,62 @@
+name: Build DEVA Debug APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Android SDK 35
+        run: yes | sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+      - name: Create Gradle wrapper
+        run: gradle wrapper --gradle-version 8.9
+      - name: Core JVM tests
+        run: ./gradlew testDebugUnitTest --stacktrace
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --stacktrace
+      - name: Verify APK exists and is non-empty
+        run: |
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          echo "APK=$APK"
+          ls -lh "$APK"
+          unzip -t "$APK" >/dev/null
+      - name: Inspect package and manifest
+        run: |
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          AAPT="$ANDROID_HOME/build-tools/35.0.0/aapt"
+          "$AAPT" dump badging "$APK" | tee apk-badging.txt
+          "$AAPT" dump permissions "$APK" | tee apk-permissions.txt
+          "$AAPT" dump xmltree "$APK" AndroidManifest.xml > apk-manifest.txt
+          grep -q "package: name='com.cclabs.deva'" apk-badging.txt
+      - name: Publish APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DEVA-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+      - name: Publish verification reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: DEVA-apk-verification
+          path: |
+            apk-badging.txt
+            apk-permissions.txt
+            apk-manifest.txt
+          retention-days: 7
