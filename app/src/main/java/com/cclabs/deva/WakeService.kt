@@ -50,6 +50,8 @@ class WakeService : Service(), RecognitionListener, TextToSpeech.OnInitListener 
         }
     }
 
+    override fun onBind(intent: Intent?) = null
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             state = State.STOPPED
