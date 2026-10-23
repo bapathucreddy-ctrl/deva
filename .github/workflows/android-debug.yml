@@ -31,6 +31,41 @@ jobs:
           fi
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+      - name: Prepare sherpa-onnx wake engine
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p app/libs app/src/main/assets
+
+          curl -fL --retry 3 \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar" \
+            -o app/libs/sherpa-onnx-1.13.8.aar
+          echo "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96  app/libs/sherpa-onnx-1.13.8.aar" | sha256sum -c -
+
+          MODEL="sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
+          curl -fL --retry 3 \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/${MODEL}.tar.bz2" \
+            -o "/tmp/${MODEL}.tar.bz2"
+          tar -xjf "/tmp/${MODEL}.tar.bz2" -C app/src/main/assets
+
+          python3 -m pip install --quiet sentencepiece
+          python3 - <<'PY'
+          import pathlib, sentencepiece as spm
+          model_dir = pathlib.Path("app/src/main/assets/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01")
+          sp = spm.SentencePieceProcessor(model_file=str(model_dir / "bpe.model"))
+          pieces = sp.encode("HEY DEVA", out_type=str)
+          line = " ".join(pieces) + " :2.0 #0.12 @HEY_DEVA\n"
+          (model_dir / "keywords.txt").write_text(line, encoding="utf-8")
+          print("Generated keywords:", line.strip())
+          PY
+
+          test -s app/libs/sherpa-onnx-1.13.8.aar
+          test -s "app/src/main/assets/${MODEL}/encoder-epoch-12-avg-2-chunk-16-left-64.onnx"
+          test -s "app/src/main/assets/${MODEL}/decoder-epoch-12-avg-2-chunk-16-left-64.onnx"
+          test -s "app/src/main/assets/${MODEL}/joiner-epoch-12-avg-2-chunk-16-left-64.onnx"
+          test -s "app/src/main/assets/${MODEL}/tokens.txt"
+          cat "app/src/main/assets/${MODEL}/keywords.txt"
+
       - name: Create Gradle wrapper
         run: gradle wrapper --gradle-version 8.9
       - name: Core JVM tests
