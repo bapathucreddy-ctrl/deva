@@ -249,8 +249,12 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
             tts.language = Locale.ENGLISH
             tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) = Unit
-                override fun onDone(utteranceId: String?) = handler.post { finishSpeech() }
-                override fun onError(utteranceId: String?) = handler.post { finishSpeech() }
+                override fun onDone(utteranceId: String?) {
+                    handler.post { finishSpeech() }
+                }
+                override fun onError(utteranceId: String?) {
+                    handler.post { finishSpeech() }
+                }
             })
         }
     }
