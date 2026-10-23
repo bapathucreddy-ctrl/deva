@@ -35,6 +35,30 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
     private var agc: AutomaticGainControl? = null
     private var ns: NoiseSuppressor? = null
     private var commandRecognizer: SpeechRecognizer? = null
+    private val audioManager by lazy { getSystemService(AudioManager::class.java) }
+    private var preferredMic: AudioDeviceInfo? = null
+    private var currentRouteKey = ""
+    private val routeRefresh = Runnable {
+        if (state != State.STOPPED) {
+            val before = currentRouteKey
+            val route = routeCommunicationAudio()
+            if (before != currentRouteKey && state == State.WAITING_FOR_WAKE && kwsReady) {
+                stopWakeAudio()
+                setRuntimeState(true, "Switching microphone", route)
+                handler.postDelayed({ startSilentWakeListening() }, 450)
+            }
+        }
+    }
+    private val deviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+            handler.removeCallbacks(routeRefresh)
+            handler.postDelayed(routeRefresh, 650)
+        }
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+            handler.removeCallbacks(routeRefresh)
+            handler.postDelayed(routeRefresh, 650)
+        }
+    }
     private var state = State.INITIALIZING
     private var nextStateAfterSpeech = State.WAITING_FOR_WAKE
 
@@ -51,6 +75,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
         }
 
         val route = routeCommunicationAudio()
+        audioManager.registerAudioDeviceCallback(deviceCallback, handler)
         setRuntimeState(true, "Loading Hey Deva wake model", route)
 
         thread(name = "deva-kws-init", isDaemon = true) {
@@ -119,6 +144,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
             return
         }
 
+        preferredMic?.let { mic -> record.setPreferredDevice(mic) }
         audioRecord = record
         try {
             if (AutomaticGainControl.isAvailable()) {
@@ -298,22 +324,48 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun routeCommunicationAudio(): String {
-        if (Build.VERSION.SDK_INT < 31) return "Phone microphone"
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-            return "Phone microphone (Bluetooth permission missing)"
-        }
-        val am = getSystemService(AudioManager::class.java)
-        am.mode = AudioManager.MODE_IN_COMMUNICATION
-        val candidate = am.availableCommunicationDevices.firstOrNull {
+        // Choose from real Android input devices, never from product names.
+        // Wired, USB, Bluetooth, or built-in microphones are all supported.
+        val bluetoothAllowed = Build.VERSION.SDK_INT < 31 ||
+            ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) ==
+                PackageManager.PERMISSION_GRANTED
+        val inputs = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+        val preferred = inputs.firstOrNull {
+            it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                it.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+                it.type == AudioDeviceInfo.TYPE_USB_DEVICE
+        } ?: if (bluetoothAllowed) inputs.firstOrNull {
             it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-            it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-            it.type == AudioDeviceInfo.TYPE_HEARING_AID
+                (Build.VERSION.SDK_INT >= 31 && it.type == AudioDeviceInfo.TYPE_BLE_HEADSET)
+        } else null
+        preferredMic = preferred
+
+        if (Build.VERSION.SDK_INT >= 31) {
+            if (preferred != null &&
+                (preferred.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                 preferred.type == AudioDeviceInfo.TYPE_BLE_HEADSET) &&
+                bluetoothAllowed) {
+                val communicationDevice = audioManager.availableCommunicationDevices.firstOrNull {
+                    it.type == preferred.type
+                }
+                if (communicationDevice != null) {
+                    audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                    audioManager.setCommunicationDevice(communicationDevice)
+                }
+            } else {
+                audioManager.clearCommunicationDevice()
+                audioManager.mode = AudioManager.MODE_NORMAL
+            }
         }
-        if (candidate != null && am.setCommunicationDevice(candidate)) {
-            val label = candidate.productName?.toString()?.takeIf { it.isNotBlank() } ?: "Bluetooth headset"
-            return "$label microphone"
+
+        currentRouteKey = preferred?.id?.toString() ?: "phone"
+        return when (preferred?.type) {
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired headset microphone"
+            AudioDeviceInfo.TYPE_USB_HEADSET, AudioDeviceInfo.TYPE_USB_DEVICE -> "USB microphone"
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Wireless headset microphone"
+            AudioDeviceInfo.TYPE_BLE_HEADSET -> "Wireless earbuds microphone"
+            else -> "Phone microphone"
         }
-        return "Phone microphone"
     }
 
     private fun notification(text: String): Notification {
@@ -361,6 +413,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
     override fun onDestroy() {
         state = State.STOPPED
         handler.removeCallbacksAndMessages(null)
+        audioManager.unregisterAudioDeviceCallback(deviceCallback)
         stopWakeAudio()
         stopCommandRecognizer()
         if (::kws.isInitialized) kws.release()
