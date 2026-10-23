@@ -25,6 +25,10 @@ android {
         jvmTarget = "17"
     }
 
+    androidResources {
+        noCompress += listOf("onnx", "model", "txt")
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
@@ -32,6 +36,7 @@ android {
 }
 
 dependencies {
+    implementation(files("libs/sherpa-onnx-1.13.8.aar"))
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.activity:activity-compose:1.10.0")
     implementation("androidx.compose.material3:material3")
