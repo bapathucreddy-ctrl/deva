@@ -4,33 +4,44 @@ import android.Manifest
 import android.app.*
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.media.AudioDeviceInfo
-import android.media.AudioManager
+import android.media.*
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import android.os.*
 import android.speech.*
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
+import com.k2fsa.sherpa.onnx.KeywordSpotter
+import com.k2fsa.sherpa.onnx.KeywordSpotterConfig
+import com.k2fsa.sherpa.onnx.OnlineStream
+import com.k2fsa.sherpa.onnx.getFeatureConfig
+import com.k2fsa.sherpa.onnx.getKeywordsFile
+import com.k2fsa.sherpa.onnx.getKwsModelConfig
 import java.util.Locale
+import kotlin.concurrent.thread
 
-class WakeService : Service(), RecognitionListener, TextToSpeech.OnInitListener {
-    private enum class State { WAITING_FOR_WAKE, WAITING_FOR_COMMAND, SPEAKING, STOPPED }
+class WakeService : Service(), TextToSpeech.OnInitListener {
+    private enum class State { INITIALIZING, WAITING_FOR_WAKE, GREETING, WAITING_FOR_COMMAND, SPEAKING, STOPPED }
 
-    private var recognizer: SpeechRecognizer? = null
-    private lateinit var tts: TextToSpeech
     private val handler = Handler(Looper.getMainLooper())
-    private var state = State.WAITING_FOR_WAKE
+    private lateinit var tts: TextToSpeech
+    private lateinit var kws: KeywordSpotter
+    private var kwsReady = false
+    private var kwsThread: Thread? = null
+    @Volatile private var kwsRunning = false
+    private var audioRecord: AudioRecord? = null
+    private var agc: AutomaticGainControl? = null
+    private var ns: NoiseSuppressor? = null
+    private var commandRecognizer: SpeechRecognizer? = null
+    private var state = State.INITIALIZING
     private var nextStateAfterSpeech = State.WAITING_FOR_WAKE
-    private var recognizerReady = false
-    private var awaitingYouTubeConfirmation = false
-    private var usingOnDeviceRecognizer = false
 
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        setRuntimeState(true, "Starting local listener", "Checking audio route")
-        startForeground(NOTIFICATION_ID, notification("Starting local listener"))
+        startForeground(NOTIFICATION_ID, notification("Preparing silent wake listener"))
         tts = TextToSpeech(this, this)
 
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -40,10 +51,28 @@ class WakeService : Service(), RecognitionListener, TextToSpeech.OnInitListener 
         }
 
         val route = routeCommunicationAudio()
-        setRuntimeState(true, "Listening for Hey Deva", route)
+        setRuntimeState(true, "Loading Hey Deva wake model", route)
 
-        createPreferredRecognizer()
-        startListening(350)
+        thread(name = "deva-kws-init", isDaemon = true) {
+            try {
+                val config = KeywordSpotterConfig(
+                    featConfig = getFeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
+                    modelConfig = getKwsModelConfig(type = 1)!!,
+                    keywordsFile = getKeywordsFile(type = 1),
+                    keywordsScore = 2.0f,
+                    keywordsThreshold = 0.12f,
+                    numTrailingBlanks = 1
+                )
+                kws = KeywordSpotter(application.assets, config)
+                kwsReady = true
+                handler.post { startSilentWakeListening() }
+            } catch (e: Throwable) {
+                handler.post {
+                    update("Wake model failed to load")
+                    stopSelf()
+                }
+            }
+        }
     }
 
     override fun onBind(intent: Intent?) = null
@@ -57,140 +86,211 @@ class WakeService : Service(), RecognitionListener, TextToSpeech.OnInitListener 
         return START_STICKY
     }
 
-    private fun createPreferredRecognizer() {
-        recognizer?.destroy()
-        usingOnDeviceRecognizer = Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
-        recognizer = if (usingOnDeviceRecognizer) {
-            SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
-        } else {
-            SpeechRecognizer.createSpeechRecognizer(this)
+    private fun startSilentWakeListening() {
+        if (!kwsReady || state == State.STOPPED || kwsRunning) return
+        stopCommandRecognizer()
+        state = State.WAITING_FOR_WAKE
+        val route = routeCommunicationAudio()
+        setRuntimeState(true, "Silently listening for Hey Deva", route)
+        update("Silently listening for Hey Deva")
+
+        val minBytes = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        )
+        if (minBytes <= 0) {
+            update("Microphone initialization failed")
+            return
         }
-        recognizer?.setRecognitionListener(this)
-        recognizerReady = true
-        update(if (usingOnDeviceRecognizer) "Listening locally for Hey Deva" else "Listening for Hey Deva")
+
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
+
+        val record = AudioRecord(
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+            minBytes * 2
+        )
+        if (record.state != AudioRecord.STATE_INITIALIZED) {
+            record.release()
+            update("Microphone initialization failed")
+            return
+        }
+
+        audioRecord = record
+        try {
+            if (AutomaticGainControl.isAvailable()) {
+                agc = AutomaticGainControl.create(record.audioSessionId)?.also { it.enabled = true }
+            }
+            if (NoiseSuppressor.isAvailable()) {
+                ns = NoiseSuppressor.create(record.audioSessionId)?.also { it.enabled = true }
+            }
+        } catch (_: Throwable) {}
+
+        val stream = kws.createStream()
+        if (stream.ptr == 0L) {
+            releaseWakeAudio()
+            update("Wake detector stream failed")
+            return
+        }
+
+        kwsRunning = true
+        record.startRecording()
+
+        kwsThread = thread(name = "deva-kws-audio", isDaemon = true) {
+            processWakeAudio(stream)
+        }
     }
 
-    private fun switchToSystemRecognizer() {
-        try { recognizer?.cancel() } catch (_: Exception) {}
-        recognizer?.destroy()
-        recognizer = SpeechRecognizer.createSpeechRecognizer(this).also { it.setRecognitionListener(this) }
-        usingOnDeviceRecognizer = false
-        recognizerReady = true
-        update("Local speech model unavailable — using Android speech service")
+    private fun processWakeAudio(stream: OnlineStream) {
+        val buffer = ShortArray(1600)
+        try {
+            while (kwsRunning && state == State.WAITING_FOR_WAKE) {
+                val count = audioRecord?.read(buffer, 0, buffer.size) ?: break
+                if (count <= 0) continue
+
+                val samples = FloatArray(count) { buffer[it] / 32768.0f }
+                stream.acceptWaveform(samples, sampleRate = SAMPLE_RATE)
+
+                while (kwsRunning && kws.isReady(stream)) {
+                    kws.decode(stream)
+                    val keyword = kws.getResult(stream).keyword
+                    if (keyword.isNotBlank()) {
+                        kws.reset(stream)
+                        handler.post { onWakeDetected() }
+                        return
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+            if (state != State.STOPPED) handler.post { restartWakeAfter(1200) }
+        } finally {
+            stream.release()
+        }
     }
 
-    private fun recognizerIntent() = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-        .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        .putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
-        .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, usingOnDeviceRecognizer)
-        .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-
-    private fun startListening(delayMs: Long = 0) {
-        if (!recognizerReady || state == State.SPEAKING || state == State.STOPPED) return
-        handler.postDelayed({
-            if (state == State.SPEAKING || state == State.STOPPED) return@postDelayed
-            try { recognizer?.startListening(recognizerIntent()) } catch (_: Exception) { retry(900) }
-        }, delayMs)
-    }
-
-    override fun onPartialResults(bundle: Bundle?) {
+    private fun onWakeDetected() {
         if (state != State.WAITING_FOR_WAKE) return
-        val text = firstResult(bundle)
-        if (containsWakePhrase(text)) update("Hey Deva heard — waiting for the rest")
+        state = State.GREETING
+        stopWakeAudio()
+        update("Hey Deva detected")
+        speak("Hi Chetan", "wake_greeting", State.WAITING_FOR_COMMAND)
     }
 
-    override fun onResults(bundle: Bundle?) {
-        val text = firstResult(bundle).trim()
-        when (state) {
-            State.WAITING_FOR_WAKE -> handleWakeResult(text)
-            State.WAITING_FOR_COMMAND -> handleCommand(text)
-            State.SPEAKING, State.STOPPED -> Unit
-        }
-    }
+    private fun startCommandRecognizer() {
+        if (state == State.STOPPED) return
+        stopWakeAudio()
+        stopCommandRecognizer()
+        state = State.WAITING_FOR_COMMAND
+        update("Listening for your command")
 
-    private fun handleWakeResult(text: String) {
-        val inlineCommand = commandAfterWake(text)
-        when {
-            inlineCommand != null && inlineCommand.isNotBlank() -> handleCommand(inlineCommand)
-            containsWakePhrase(text) -> {
-                update("Awake — listening for command")
-                speak("Hi Chetan", "wake_prompt", State.WAITING_FOR_COMMAND)
+        val sr = SpeechRecognizer.createSpeechRecognizer(this)
+        commandRecognizer = sr
+        sr.setRecognitionListener(object : RecognitionListener {
+            override fun onResults(bundle: Bundle?) {
+                val text = bundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty().trim()
+                stopCommandRecognizer()
+                if (text.isBlank()) {
+                    speak("I didn't catch that.", "empty_command", State.WAITING_FOR_WAKE)
+                    return
+                }
+                val result = AssistantActions(this@WakeService).execute(CommandRouter.parse(text))
+                update("Heard: $text")
+                speak(result.spoken, "command_reply", State.WAITING_FOR_WAKE)
             }
-            else -> retry(250)
-        }
-    }
 
-    private fun handleCommand(text: String) {
-        if (text.isBlank()) {
-            awaitingYouTubeConfirmation = false
-            update("Listening for Hey Deva")
-            speak("I didn't catch that.", "empty_command", State.WAITING_FOR_WAKE)
-            return
-        }
-
-        if (awaitingYouTubeConfirmation) {
-            awaitingYouTubeConfirmation = false
-            val normalized = text.trim().lowercase(Locale.ENGLISH)
-            val result = if (normalized in setOf("yes","yeah","yep","sure","okay","ok")) {
-                AssistantActions(this).openYouTubeMusic()
-            } else {
-                AssistantActions.Result("Okay, staying with Spotify.", true)
+            override fun onError(error: Int) {
+                stopCommandRecognizer()
+                if (state == State.STOPPED) return
+                when (error) {
+                    SpeechRecognizer.ERROR_NO_MATCH,
+                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> speak("I didn't catch that.", "no_match", State.WAITING_FOR_WAKE)
+                    else -> {
+                        update("Command recognition error $error")
+                        speak("I couldn't hear the command clearly.", "command_error", State.WAITING_FOR_WAKE)
+                    }
+                }
             }
-            update(result.spoken)
-            speak(result.spoken, "youtube_confirmation", State.WAITING_FOR_WAKE)
-            return
-        }
 
-        val result = AssistantActions(this).execute(CommandRouter.parse(text))
-        awaitingYouTubeConfirmation = result.followUp == AssistantActions.FollowUp.CONFIRM_YOUTUBE_MUSIC
-        update(result.spoken)
-        speak(result.spoken, "command_reply", if (awaitingYouTubeConfirmation) State.WAITING_FOR_COMMAND else State.WAITING_FOR_WAKE)
+            override fun onReadyForSpeech(params: Bundle?) = Unit
+            override fun onBeginningOfSpeech() = Unit
+            override fun onRmsChanged(rmsdB: Float) = Unit
+            override fun onBufferReceived(buffer: ByteArray?) = Unit
+            override fun onEndOfSpeech() = Unit
+            override fun onPartialResults(partialResults: Bundle?) = Unit
+            override fun onEvent(eventType: Int, params: Bundle?) = Unit
+        })
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+            .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+
+        try {
+            sr.startListening(intent)
+        } catch (_: Throwable) {
+            stopCommandRecognizer()
+            restartWakeAfter(500)
+        }
     }
 
     private fun speak(text: String, id: String, after: State) {
         nextStateAfterSpeech = after
-        if (!::tts.isInitialized) {
-            state = after
-            startListening(300)
-            return
-        }
-        try { recognizer?.cancel() } catch (_: Exception) {}
         state = State.SPEAKING
         val queued = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, id)
-        if (queued == TextToSpeech.ERROR) {
-            state = after
-            startListening(350)
+        if (queued == TextToSpeech.ERROR) finishSpeech()
+    }
+
+    override fun onInit(status: Int) {
+        if (status == TextToSpeech.SUCCESS) {
+            tts.language = Locale.ENGLISH
+            tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) = Unit
+                override fun onDone(utteranceId: String?) = handler.post { finishSpeech() }
+                override fun onError(utteranceId: String?) = handler.post { finishSpeech() }
+            })
         }
     }
 
-    override fun onError(error: Int) {
-        if (state == State.SPEAKING || state == State.STOPPED) return
-        if (usingOnDeviceRecognizer &&
-            (error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED ||
-             error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE)) {
-            switchToSystemRecognizer()
-            startListening(300)
-            return
+    private fun finishSpeech() {
+        if (state == State.STOPPED) return
+        state = nextStateAfterSpeech
+        when (state) {
+            State.WAITING_FOR_COMMAND -> startCommandRecognizer()
+            State.WAITING_FOR_WAKE -> restartWakeAfter(350)
+            else -> Unit
         }
-        val delay = when (error) {
-            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 1800L
-            SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> 1800L
-            else -> 1200L
-        }
-        if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
-            update("Speech recognizer error $error — retrying")
-        }
-        retry(delay)
     }
 
-    private fun retry(delay: Long) = startListening(delay)
-    private fun firstResult(bundle: Bundle?): String =
-        bundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
-    private fun containsWakePhrase(text: String) = WAKE_REGEX.containsMatchIn(text)
-    private fun commandAfterWake(text: String): String? {
-        val match = WAKE_REGEX.find(text) ?: return null
-        return text.substring(match.range.last + 1).trim().trimStart(',', '.', '-', ':')
+    private fun restartWakeAfter(delayMs: Long) {
+        if (state == State.STOPPED) return
+        handler.postDelayed({
+            if (state != State.STOPPED) startSilentWakeListening()
+        }, delayMs)
+    }
+
+    private fun stopWakeAudio() {
+        kwsRunning = false
+        releaseWakeAudio()
+    }
+
+    private fun releaseWakeAudio() {
+        try { audioRecord?.stop() } catch (_: Throwable) {}
+        try { agc?.release() } catch (_: Throwable) {}
+        try { ns?.release() } catch (_: Throwable) {}
+        try { audioRecord?.release() } catch (_: Throwable) {}
+        agc = null
+        ns = null
+        audioRecord = null
+    }
+
+    private fun stopCommandRecognizer() {
+        try { commandRecognizer?.cancel() } catch (_: Throwable) {}
+        try { commandRecognizer?.destroy() } catch (_: Throwable) {}
+        commandRecognizer = null
     }
 
     private fun routeCommunicationAudio(): String {
@@ -207,17 +307,25 @@ class WakeService : Service(), RecognitionListener, TextToSpeech.OnInitListener 
         }
         if (candidate != null && am.setCommunicationDevice(candidate)) {
             val label = candidate.productName?.toString()?.takeIf { it.isNotBlank() } ?: "Bluetooth headset"
-            return "$label microphone requested"
+            return "$label microphone"
         }
-        return "Phone microphone (no Bluetooth communication route)"
+        return "Phone microphone"
     }
 
     private fun notification(text: String): Notification {
-        val stop = PendingIntent.getService(this, 2, Intent(this, WakeService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val open = PendingIntent.getActivity(this, 3, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val stop = PendingIntent.getService(
+            this, 2,
+            Intent(this, WakeService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val open = PendingIntent.getActivity(
+            this, 3,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
         return NotificationCompat.Builder(this, CHANNEL_SERVICE)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentTitle("DEVA wake listener")
+            .setContentTitle("DEVA")
             .setContentText(text)
             .setContentIntent(open)
             .setOngoing(true)
@@ -227,7 +335,8 @@ class WakeService : Service(), RecognitionListener, TextToSpeech.OnInitListener 
     }
 
     private fun update(text: String) {
-        setRuntimeState(true, text, getSharedPreferences(PREFS_RUNTIME, MODE_PRIVATE).getString(KEY_AUDIO_ROUTE, "Unknown") ?: "Unknown")
+        val prefs = getSharedPreferences(PREFS_RUNTIME, MODE_PRIVATE)
+        setRuntimeState(true, text, prefs.getString(KEY_AUDIO_ROUTE, "Unknown") ?: "Unknown")
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(text))
     }
 
@@ -245,51 +354,28 @@ class WakeService : Service(), RecognitionListener, TextToSpeech.OnInitListener 
         )
     }
 
-    override fun onInit(status: Int) {
-        if (status == TextToSpeech.SUCCESS) {
-            tts.language = Locale.ENGLISH
-            tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) = Unit
-                override fun onError(utteranceId: String?) = finishSpeech()
-                override fun onDone(utteranceId: String?) = finishSpeech()
-            })
-        }
-    }
-
-    private fun finishSpeech() {
-        handler.post {
-            if (state == State.STOPPED) return@post
-            state = nextStateAfterSpeech
-            startListening(300)
-        }
-    }
-
     override fun onDestroy() {
         state = State.STOPPED
         handler.removeCallbacksAndMessages(null)
-        try { recognizer?.cancel() } catch (_: Exception) {}
-        recognizer?.destroy()
+        stopWakeAudio()
+        stopCommandRecognizer()
+        if (::kws.isInitialized) kws.release()
         if (::tts.isInitialized) tts.shutdown()
-        if (Build.VERSION.SDK_INT >= 31) getSystemService(AudioManager::class.java).clearCommunicationDevice()
+        if (Build.VERSION.SDK_INT >= 31) {
+            try { getSystemService(AudioManager::class.java).clearCommunicationDevice() } catch (_: Throwable) {}
+        }
         setRuntimeState(false, "Wake listener stopped", "Not active")
         super.onDestroy()
     }
-
-    override fun onReadyForSpeech(params: Bundle?) = Unit
-    override fun onBeginningOfSpeech() = Unit
-    override fun onRmsChanged(rmsdB: Float) = Unit
-    override fun onBufferReceived(buffer: ByteArray?) = Unit
-    override fun onEndOfSpeech() = Unit
-    override fun onEvent(eventType: Int, params: Bundle?) = Unit
 
     companion object {
         private const val ACTION_STOP = "com.cclabs.deva.STOP_WAKE"
         private const val CHANNEL_SERVICE = "service"
         private const val NOTIFICATION_ID = 1
+        private const val SAMPLE_RATE = 16000
         const val PREFS_RUNTIME = "deva_runtime"
         const val KEY_RUNNING = "wake_running"
         const val KEY_STATUS = "wake_status"
         const val KEY_AUDIO_ROUTE = "audio_route"
-        private val WAKE_REGEX = Regex("\\bhey\\s+deva\\b", RegexOption.IGNORE_CASE)
     }
 }
