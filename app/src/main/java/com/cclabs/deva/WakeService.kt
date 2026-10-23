@@ -115,7 +115,7 @@ class WakeService : Service(), RecognitionListener, TextToSpeech.OnInitListener 
             inlineCommand != null && inlineCommand.isNotBlank() -> handleCommand(inlineCommand)
             containsWakePhrase(text) -> {
                 update("Awake — listening for command")
-                speak("Yes?", "wake_prompt", State.WAITING_FOR_COMMAND)
+                speak("Hi Chetan", "wake_prompt", State.WAITING_FOR_COMMAND)
             }
             else -> retry(250)
         }
@@ -174,11 +174,13 @@ class WakeService : Service(), RecognitionListener, TextToSpeech.OnInitListener 
             return
         }
         val delay = when (error) {
-            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 1200L
-            SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> 250L
-            else -> 700L
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 1800L
+            SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> 1800L
+            else -> 1200L
         }
-        update("Speech recognizer error $error — retrying")
+        if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+            update("Speech recognizer error $error — retrying")
+        }
         retry(delay)
     }
 
@@ -199,7 +201,9 @@ class WakeService : Service(), RecognitionListener, TextToSpeech.OnInitListener 
         val am = getSystemService(AudioManager::class.java)
         am.mode = AudioManager.MODE_IN_COMMUNICATION
         val candidate = am.availableCommunicationDevices.firstOrNull {
-            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+            it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+            it.type == AudioDeviceInfo.TYPE_HEARING_AID
         }
         if (candidate != null && am.setCommunicationDevice(candidate)) {
             val label = candidate.productName?.toString()?.takeIf { it.isNotBlank() } ?: "Bluetooth headset"
