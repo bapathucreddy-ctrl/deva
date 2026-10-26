@@ -242,7 +242,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     HorizontalDivider()
                     Text("V1 settings", style = MaterialTheme.typography.titleSmall)
                     Text("Spotify is preferred. YouTube Music is never selected automatically when Spotify cannot satisfy a request.", style = MaterialTheme.typography.bodySmall)
-                    Text("DEVA prefers Android on-device recognition for wake listening, but falls back to the phone's normal speech service if the local language model is unavailable.", style = MaterialTheme.typography.bodySmall)
+                    Text("DEVA uses local keyword detection for wake listening and Android speech recognition only after the greeting.", style = MaterialTheme.typography.bodySmall)
                     Text("After a reboot, Android requires DEVA to be opened/tapped before microphone foreground listening can restart.", style = MaterialTheme.typography.bodySmall)
                 }
             }

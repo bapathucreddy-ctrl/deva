@@ -269,7 +269,10 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
                 if (state == State.STOPPED) return
                 when (error) {
                     SpeechRecognizer.ERROR_NO_MATCH,
-                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> speak("I didn't catch that.", "no_match", State.WAITING_FOR_WAKE)
+                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
+                        update("Command recognition no-match (" + error + ")")
+                        speak("I didn't catch that.", "no_match", State.WAITING_FOR_WAKE)
+                    }
                     else -> {
                         update("Command recognition error $error")
                         speak("I couldn't hear the command clearly.", "command_error", State.WAITING_FOR_WAKE)
@@ -277,8 +280,8 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
                 }
             }
 
-            override fun onReadyForSpeech(params: Bundle?) = Unit
-            override fun onBeginningOfSpeech() = Unit
+            override fun onReadyForSpeech(params: Bundle?) { update("Command ready - speak now") }
+            override fun onBeginningOfSpeech() { update("Hearing command speech") }
             override fun onRmsChanged(rmsdB: Float) = Unit
             override fun onBufferReceived(buffer: ByteArray?) = Unit
             override fun onEndOfSpeech() = Unit
