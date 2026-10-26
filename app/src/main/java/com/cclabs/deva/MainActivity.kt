@@ -79,6 +79,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             }
             override fun onError(error: Int) {
                 val message = when (error) {
+                    SpeechRecognizer.ERROR_NO_MATCH -> "No speech matched. Speak after the listening prompt and retry."
+                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech detected. Try speaking closer to the microphone."
                     SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "Selected speech language is not supported."
                     SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "Speech language model is unavailable. Check Google/Samsung speech services or download the language model."
                     else -> "Speech recognition error $error"
@@ -189,7 +191,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             Text("Device readiness", style = MaterialTheme.typography.titleMedium)
                             Text(permissionStatus, style = MaterialTheme.typography.bodySmall)
                             Text("Bluetooth: $bluetoothStatus", style = MaterialTheme.typography.bodySmall)
-                            Text("Target earbuds: GOBOULT SPRINT", style = MaterialTheme.typography.bodySmall)
+                            Text("Supports phone, wired, USB and available wireless microphones", style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
@@ -199,6 +201,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                         enabled = !testing,
                         onClick = {
                             testing = true
+                            stopWake() // Release the silent AudioRecord before the recognition test.
                             status = "Listening for one command…"
                             testVoiceCommand(
                                 onText = { status = it },
