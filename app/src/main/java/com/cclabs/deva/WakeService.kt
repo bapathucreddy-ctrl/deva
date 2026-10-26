@@ -59,7 +59,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
             handler.postDelayed(routeRefresh, 650)
         }
     }
-    private var state = State.INITIALIZING
+    @Volatile private var state = State.INITIALIZING
     private var nextStateAfterSpeech = State.WAITING_FOR_WAKE
 
     override fun onCreate() {
@@ -132,7 +132,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
 
         val record = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            MediaRecorder.AudioSource.MIC,
             SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
@@ -162,8 +162,22 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
             return
         }
 
+        try {
+            record.startRecording()
+            if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                update("Microphone could not start recording")
+                stream.release()
+                releaseWakeAudio()
+                return
+            }
+        } catch (e: Exception) {
+            update("Microphone start failed")
+            stream.release()
+            releaseWakeAudio()
+            return
+        }
         kwsRunning = true
-        record.startRecording()
+        update("Microphone recording started — testing live signal")
 
         kwsThread = thread(name = "deva-kws-audio", isDaemon = true) {
             processWakeAudio(stream)
@@ -172,10 +186,27 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
 
     private fun processWakeAudio(stream: OnlineStream) {
         val buffer = ShortArray(1600)
+        var audioReads = 0
         try {
             while (kwsRunning && state == State.WAITING_FOR_WAKE) {
                 val count = audioRecord?.read(buffer, 0, buffer.size) ?: break
-                if (count <= 0) continue
+                if (count < 0) {
+                    handler.post { update("Wake microphone read error " + count) }
+                    break
+                }
+                if (count == 0) continue
+                audioReads++
+                if (audioReads % 20 == 0) {
+                    var power = 0.0
+                    for (i in 0 until count) power += buffer[i].toDouble() * buffer[i].toDouble()
+                    val rms = kotlin.math.sqrt(power / count) / 32768.0
+                    val db = (20.0 * kotlin.math.log10(rms.coerceAtLeast(0.000001))).toInt()
+                    handler.post {
+                        if (state == State.WAITING_FOR_WAKE) {
+                            update("Wake microphone LIVE " + db + " dBFS - say Hey Deva")
+                        }
+                    }
+                }
 
                 val samples = FloatArray(count) { buffer[it] / 32768.0f }
                 stream.acceptWaveform(samples, sampleRate = SAMPLE_RATE)
@@ -190,8 +221,8 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
                     }
                 }
             }
-        } catch (_: Throwable) {
-            if (state != State.STOPPED) handler.post { restartWakeAfter(1200) }
+        } catch (e: Throwable) {
+            if (state != State.STOPPED) handler.post { update("Wake engine error: " + e.javaClass.simpleName) }
         } finally {
             stream.release()
         }
