@@ -3,6 +3,9 @@ package com.cclabs.deva
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
+import android.media.session.MediaSessionManager
+import android.content.ComponentName
+import androidx.core.app.NotificationManagerCompat
 import android.net.Uri
 import android.provider.AlarmClock
 import android.view.KeyEvent
@@ -43,10 +46,30 @@ class AssistantActions(private val context: Context) {
     }
 
     private fun mediaKey(code: Int, reply: String): Result {
-        val audio = context.getSystemService(AudioManager::class.java)
-        audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
-        audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
-        return Result(reply, true)
+        if (!NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)) {
+            return Result("Enable DEVA notification access in settings to control music without opening Spotify.", false)
+        }
+        return try {
+            val manager = context.getSystemService(MediaSessionManager::class.java)
+            val listener = ComponentName(context, DevaMediaListener::class.java)
+            val sessions = manager.getActiveSessions(listener)
+            val spotify = sessions.firstOrNull { it.packageName == SPOTIFY_PACKAGE }
+            val player = spotify ?: sessions.firstOrNull()
+                ?: return Result("Start Spotify playback once, then I can pause, resume, and skip songs.", false)
+            val transport = player.transportControls
+            when (code) {
+                KeyEvent.KEYCODE_MEDIA_PLAY -> transport.play()
+                KeyEvent.KEYCODE_MEDIA_PAUSE -> transport.pause()
+                KeyEvent.KEYCODE_MEDIA_NEXT -> transport.skipToNext()
+                KeyEvent.KEYCODE_MEDIA_PREVIOUS -> transport.skipToPrevious()
+                else -> return Result("That media command is not supported.", false)
+            }
+            Result(reply, true)
+        } catch (e: SecurityException) {
+            Result("DEVA needs notification access to control Spotify.", false)
+        } catch (e: Exception) {
+            Result("I couldn't control the current music session.", false)
+        }
     }
 
     private fun volume(direction: Int, reply: String): Result {
@@ -59,7 +82,7 @@ class AssistantActions(private val context: Context) {
             return Result("Spotify isn't installed. Would you like me to open YouTube Music?", false, FollowUp.CONFIRM_YOUTUBE_MUSIC)
         }
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:${Uri.encode(query)}")).setPackage(SPOTIFY_PACKAGE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        return try { context.startActivity(intent); Result("Opening $query in Spotify.", true) }
+        return try { context.startActivity(intent); Result("Showing $query in Spotify. Playing an exact song in the background needs Spotify account authorization.", false) }
         catch (_: Exception) { Result("Spotify couldn't open that search. Would you like me to open YouTube Music?", false, FollowUp.CONFIRM_YOUTUBE_MUSIC) }
     }
 

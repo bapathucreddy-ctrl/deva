@@ -11,8 +11,8 @@ object CommandRouter {
         val s = normalized.removePrefix("hey deva").trim()
         return when {
             s.matches(Regex(".*\\b(pause|stop)\\b(?:.*\\b(music|song|spotify)\\b)?.*")) -> Command(CommandType.MUSIC_PAUSE, input)
-            Regex("\\b(resume|continue)\\b").containsMatchIn(s) -> Command(CommandType.MUSIC_PLAY, input)
-            Regex("\\bnext( track| song)?\\b").containsMatchIn(s) -> Command(CommandType.MUSIC_NEXT, input)
+            Regex("\\b(resume|continue|unpause)\\b").containsMatchIn(s) -> Command(CommandType.MUSIC_PLAY, input)
+            Regex("\\b(next|skip)( track| song)?\\b").containsMatchIn(s) -> Command(CommandType.MUSIC_NEXT, input)
             Regex("\\b(previous|prev|last)( track| song)?\\b").containsMatchIn(s) -> Command(CommandType.MUSIC_PREVIOUS, input)
             Regex("\\b(volume up|increase volume|louder)\\b").containsMatchIn(s) -> Command(CommandType.VOLUME_UP, input)
             Regex("\\b(volume down|decrease volume|quieter|lower volume)\\b").containsMatchIn(s) -> Command(CommandType.VOLUME_DOWN, input)

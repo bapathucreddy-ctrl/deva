@@ -9,6 +9,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
+import androidx.core.app.NotificationManagerCompat
 import android.speech.*
 import android.speech.tts.TextToSpeech
 import androidx.activity.ComponentActivity
@@ -226,6 +228,23 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) { Text(if (testing) "Listening…" else "Test voice command") }
+                }
+
+                item {
+                    Card {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Hands-free music controls", style = MaterialTheme.typography.titleMedium)
+                            Text(if (NotificationManagerCompat.getEnabledListenerPackages(this@MainActivity).contains(packageName))
+                                "Notification access enabled: DEVA can control active music sessions."
+                                else "Enable notification access once to allow DEVA to pause, resume and skip active Spotify music.",
+                                style = MaterialTheme.typography.bodySmall)
+                            OutlinedButton(onClick = {
+                                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                            }) { Text("Set up music control access") }
+                            Text("Exact song selection without showing Spotify requires separate Spotify authorization.",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
 
                 item { Text("Reminders", style = MaterialTheme.typography.titleMedium) }
