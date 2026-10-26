@@ -53,10 +53,16 @@ jobs:
           import pathlib, sentencepiece as spm
           model_dir = pathlib.Path("app/src/main/assets/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01")
           sp = spm.SentencePieceProcessor(model_file=str(model_dir / "bpe.model"))
-          pieces = sp.encode("HEY DEVA", out_type=str)
-          line = " ".join(pieces) + " :2.0 #0.12 @HEY_DEVA\n"
-          (model_dir / "keywords.txt").write_text(line, encoding="utf-8")
-          print("Generated keywords:", line.strip())
+          variants = ["HEY DEVA", "HEY DIVA", "HEY DAYVA", "HEY DEEVA"]
+          vocab = {line.split()[0] for line in (model_dir / "tokens.txt").read_text(encoding="utf-8").splitlines()}
+          lines = []
+          for phrase in variants:
+              pieces = sp.encode(phrase, out_type=str)
+              if any(piece not in vocab for piece in pieces):
+                  raise RuntimeError(f"Unknown model token for {phrase}: {pieces}")
+              lines.append(" ".join(pieces) + " :2.0 #0.08 @HEY_DEVA")
+          (model_dir / "keywords.txt").write_text(chr(10).join(lines) + chr(10), encoding="utf-8")
+          print("Generated keywords:", lines)
           PY
 
           test -s app/libs/sherpa-onnx-1.13.8.aar
