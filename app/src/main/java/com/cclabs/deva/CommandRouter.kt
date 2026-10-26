@@ -22,9 +22,9 @@ object CommandRouter {
             s.startsWith("set an alarm") || s.startsWith("set alarm") || s.startsWith("wake me") -> Command(CommandType.SET_ALARM, input)
             s.startsWith("remind me") -> Command(CommandType.SET_REMINDER, input)
             s.startsWith("open ") -> Command(CommandType.OPEN_APP, input, s.removePrefix("open ").trim())
-            s.startsWith("play ") -> {
-                val q = s.removePrefix("play ").removeSuffix(" on spotify").trim()
-                if (q in setOf("music","song","songs")) Command(CommandType.MUSIC_PLAY, input) else Command(CommandType.MUSIC_PLAY, input, q)
+            s.startsWith("play ") || s.startsWith("put on ") || s.startsWith("switch to ") -> {
+                val q = s.removePrefix("play ").removePrefix("put on ").removePrefix("switch to ").removePrefix("the song ").removePrefix("song ").removeSuffix(" on spotify").trim()
+                if (q in setOf("music","song","songs","some music","my music")) Command(CommandType.MUSIC_PLAY, input) else Command(CommandType.MUSIC_PLAY, input, q)
             }
             else -> Command(CommandType.UNKNOWN, input)
         }
