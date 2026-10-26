@@ -355,47 +355,25 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun routeCommunicationAudio(): String {
-        // Choose from real Android input devices, never from product names.
-        // Wired, USB, Bluetooth, or built-in microphones are all supported.
-        val bluetoothAllowed = Build.VERSION.SDK_INT < 31 ||
-            ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) ==
-                PackageManager.PERMISSION_GRANTED
+        // Idle wake listening must NOT use call/communication mode.
+        // Bluetooth SCO / BLE communication routing can hijack the media stream,
+        // degrade music quality, and change the volume controls.
+        // Prefer wired/USB microphones; otherwise use the phone microphone.
+        // AudioRecord input selection does not change the media output route.
         val inputs = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
-        val preferred = inputs.firstOrNull {
+        val selected = inputs.firstOrNull {
             it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
                 it.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
                 it.type == AudioDeviceInfo.TYPE_USB_DEVICE
-        } ?: if (bluetoothAllowed) inputs.firstOrNull {
-            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                (Build.VERSION.SDK_INT >= 31 && it.type == AudioDeviceInfo.TYPE_BLE_HEADSET)
-        } else null
-        preferredMic = preferred
-
-        if (Build.VERSION.SDK_INT >= 31) {
-            if (preferred != null &&
-                (preferred.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                 preferred.type == AudioDeviceInfo.TYPE_BLE_HEADSET) &&
-                bluetoothAllowed) {
-                val communicationDevice = audioManager.availableCommunicationDevices.firstOrNull {
-                    it.type == preferred.type
-                }
-                if (communicationDevice != null) {
-                    audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-                    audioManager.setCommunicationDevice(communicationDevice)
-                }
-            } else {
-                audioManager.clearCommunicationDevice()
-                audioManager.mode = AudioManager.MODE_NORMAL
-            }
+        } ?: inputs.firstOrNull {
+            it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC
         }
-
-        currentRouteKey = preferred?.id?.toString() ?: "phone"
-        return when (preferred?.type) {
-            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired headset microphone"
-            AudioDeviceInfo.TYPE_USB_HEADSET, AudioDeviceInfo.TYPE_USB_DEVICE -> "USB microphone"
-            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Wireless headset microphone"
-            AudioDeviceInfo.TYPE_BLE_HEADSET -> "Wireless earbuds microphone"
-            else -> "Phone microphone"
+        preferredMic = selected
+        currentRouteKey = selected?.id?.toString() ?: "default"
+        return when (selected?.type) {
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired headset mic (media unchanged)"
+            AudioDeviceInfo.TYPE_USB_HEADSET, AudioDeviceInfo.TYPE_USB_DEVICE -> "USB mic (media unchanged)"
+            else -> "Phone mic (wireless media unchanged)"
         }
     }
 
@@ -449,9 +427,6 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
         stopCommandRecognizer()
         if (::kws.isInitialized) kws.release()
         if (::tts.isInitialized) tts.shutdown()
-        if (Build.VERSION.SDK_INT >= 31) {
-            try { getSystemService(AudioManager::class.java).clearCommunicationDevice() } catch (_: Throwable) {}
-        }
         setRuntimeState(false, "Wake listener stopped", "Not active")
         super.onDestroy()
     }
