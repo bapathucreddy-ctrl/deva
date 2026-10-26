@@ -23,7 +23,16 @@ class AssistantActions(private val context: Context) {
         CommandType.SET_ALARM -> setAlarm(command.raw)
         CommandType.SET_REMINDER -> setReminder(command.raw)
         CommandType.OPEN_APP -> openApp(command.query.orEmpty())
+        CommandType.TELL_TIME -> tellTime()
+        CommandType.GREETING -> Result("Hi bro! What can I do for you?", true)
+        CommandType.HELP -> Result("I can open Spotify, play or pause music, skip tracks, change volume, tell the time, and set alarms or reminders.", true)
         CommandType.UNKNOWN -> Result("I didn't understand that yet.", false)
+    }
+
+    private fun tellTime(): Result {
+        val now = java.time.LocalTime.now()
+        val formatted = now.format(java.time.format.DateTimeFormatter.ofPattern("h:mm a", java.util.Locale.ENGLISH))
+        return Result("It's " + formatted + ".", true)
     }
 
     fun openYouTubeMusic(): Result {
