@@ -182,6 +182,14 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                 OutlinedButton(onClick = {
                                     stopWake(); status = "Wake service stopped"
                                 }) { Text("Stop") }
+                                OutlinedButton(onClick = {
+                                    ContextCompat.startForegroundService(
+                                        this@MainActivity,
+                                        Intent(this@MainActivity, WakeService::class.java)
+                                            .setAction(WakeService.ACTION_TEST_GREETING)
+                                    )
+                                    status = "Testing Hi bro without the wake-word detector"
+                                }) { Text("Test greeting") }
                             }
                         }
                     }
