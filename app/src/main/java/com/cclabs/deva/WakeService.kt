@@ -86,7 +86,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
                     keywordsFile = getKeywordsFile(type = 1),
                     keywordsScore = 2.0f,
                     keywordsThreshold = 0.12f,
-                    numTrailingBlanks = 1
+                    numTrailingBlanks = 2
                 )
                 kws = KeywordSpotter(application.assets, config)
                 kwsReady = true
@@ -222,7 +222,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
                     val keyword = kws.getResult(stream).keyword
                     if (keyword.isNotBlank()) {
                         kws.reset(stream)
-                        handler.post { onWakeDetected() }
+                        handler.post { onWakeDetected(keyword) }
                         return
                     }
                 }
@@ -234,11 +234,11 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun onWakeDetected() {
+    private fun onWakeDetected(keyword: String) {
         if (state != State.WAITING_FOR_WAKE) return
         state = State.GREETING
         stopWakeAudio()
-        update("Hey Deva detected")
+        update("Wake detector triggered: " + keyword)
         speak("Hi bro", "wake_greeting", State.WAITING_FOR_COMMAND)
     }
 
