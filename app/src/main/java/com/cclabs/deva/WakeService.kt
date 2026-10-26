@@ -108,6 +108,12 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_TEST_GREETING) {
+            state = State.GREETING
+            stopWakeAudio()
+            update("Manual greeting test triggered")
+            speak("Hi bro", "manual_greeting", State.WAITING_FOR_WAKE)
+        }
         return START_STICKY
     }
 
@@ -233,7 +239,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
         state = State.GREETING
         stopWakeAudio()
         update("Hey Deva detected")
-        speak("Hi Chetan", "wake_greeting", State.WAITING_FOR_COMMAND)
+        speak("Hi bro", "wake_greeting", State.WAITING_FOR_COMMAND)
     }
 
     private fun startCommandRecognizer() {
@@ -432,6 +438,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
     }
 
     companion object {
+        const val ACTION_TEST_GREETING = "com.cclabs.deva.TEST_GREETING"
         private const val ACTION_STOP = "com.cclabs.deva.STOP_WAKE"
         private const val CHANNEL_SERVICE = "service"
         private const val NOTIFICATION_ID = 1
