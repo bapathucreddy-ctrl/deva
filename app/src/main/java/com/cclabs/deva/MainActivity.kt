@@ -65,10 +65,11 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             return
         }
 
+        var partial = ""
         val sr = SpeechRecognizer.createSpeechRecognizer(this)
         sr.setRecognitionListener(object : RecognitionListener {
             override fun onResults(bundle: Bundle?) {
-                val text = bundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
+                val text = bundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.takeIf { it.isNotBlank() } ?: partial
                 if (text.isBlank()) {
                     onText("I didn't catch that.")
                 } else {
@@ -96,14 +97,17 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             override fun onRmsChanged(rmsdB: Float) = Unit
             override fun onBufferReceived(buffer: ByteArray?) = Unit
             override fun onEndOfSpeech() = Unit
-            override fun onPartialResults(partialResults: Bundle?) = Unit
+            override fun onPartialResults(partialResults: Bundle?) {
+                partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
+                if (partial.isNotBlank()) onText("Heard partial: " + partial)
+            }
             override fun onEvent(eventType: Int, params: Bundle?) = Unit
         })
         sr.startListening(
             Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                 .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                .putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
-                .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
+                .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         )
     }
 
@@ -218,7 +222,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                     onText = { status = it },
                                     onFinished = { testing = false }
                                 )
-                            }, 1100L)
+                            }, 1800L)
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) { Text(if (testing) "Listening…" else "Test voice command") }
