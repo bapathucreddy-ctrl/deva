@@ -7,6 +7,8 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.*
 import android.speech.tts.TextToSpeech
 import androidx.activity.ComponentActivity
@@ -89,8 +91,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 sr.destroy()
                 onFinished()
             }
-            override fun onReadyForSpeech(params: Bundle?) = Unit
-            override fun onBeginningOfSpeech() = Unit
+            override fun onReadyForSpeech(params: Bundle?) { onText("Ready — speak your command now") }
+            override fun onBeginningOfSpeech() { onText("Hearing your voice…") }
             override fun onRmsChanged(rmsdB: Float) = Unit
             override fun onBufferReceived(buffer: ByteArray?) = Unit
             override fun onEndOfSpeech() = Unit
@@ -202,11 +204,13 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                         onClick = {
                             testing = true
                             stopWake() // Release the silent AudioRecord before the recognition test.
-                            status = "Listening for one command…"
-                            testVoiceCommand(
-                                onText = { status = it },
-                                onFinished = { testing = false }
-                            )
+                            status = "Switching microphone to voice test…"
+                            Handler(Looper.getMainLooper()).postDelayed({
+                                testVoiceCommand(
+                                    onText = { status = it },
+                                    onFinished = { testing = false }
+                                )
+                            }, 1100L)
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) { Text(if (testing) "Listening…" else "Test voice command") }
